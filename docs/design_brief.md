@@ -1,10 +1,62 @@
 # EDGAR Risk Screener — Design Brief
 
 **Purpose of this document:** a complete design spec for a second, separate
-prototype, to be built with Claude Code Desktop for local execution and
-debugging. This is a companion project to `edgar_10k_research_agent`
-(Prototype 1), reusing some of its components but solving a different
-business problem.
+prototype, a companion project to `edgar_10k_research_agent` (Prototype 1),
+reusing some of its components but solving a different business problem.
+
+**Repo name:** `edgar_risk_screener`
+
+## Status: Milestone 1 scaffolded, not yet run against live data
+
+Milestone 1 (this document's full scope) has been scaffolded as a working
+repo, including a Streamlit UI. This was confirmed explicitly: Milestone 1
+was never backend-only, section 9's Streamlit layout **is** part of
+Milestone 1, not a later addition.
+
+**What exists in the repo already:**
+- Full package structure under `src/edgar_risk_screener/` — `edgar_client/`
+  (XBRL facts + the new two-period Risk Factors fetch), `schemas.py`,
+  `llm_provider.py`, `kpi_change.py` (Track 1), `topic_extraction.py`
+  (Track 2 Step 1, LLM), `topic_diff.py` (Track 2 Step 2, deterministic),
+  `quote_verification.py`, `screener.py` (orchestration)
+- `app/streamlit_app.py` — single-ticker UI matching section 9's layout
+- `docs/architecture.md` — the four known limitations below, written up
+  explicitly rather than left implicit
+- `tests/` — 12 offline tests (no EDGAR or LLM calls) covering
+  `kpi_change.py`, `topic_diff.py`, and `quote_verification.py`; all
+  passing
+- Lazy-import discipline confirmed: `topic_extraction.py` and
+  `screener.py` import cleanly without `langchain`/`edgartools` installed,
+  same pattern used (and needed) twice in Prototype 1
+
+**What is explicitly NOT done yet, and is the reason for switching to
+Claude Code Desktop:**
+- Never run against a real ticker with live EDGAR/LLM calls — no API keys
+  or local execution available in the environment that scaffolded this
+- No hand-verification yet of any flagged topic against a real filing
+  (the Milestone 1 verification step this whole design is built around)
+- The two open thresholds (`UNUSUAL_CHANGE_THRESHOLD_PCT = 20.0` in
+  `kpi_change.py`, `EXPANSION_MULTIPLIER = 2.0` and
+  `SIMILARITY_THRESHOLD = 0.6` in `topic_diff.py`) are defaults from the
+  design discussion, not calibrated against real data
+- `filing_sections.py`'s "prior year = filings[1]" assumption (see section
+  8 note) has not been tested against a real company's filing history
+
+**Handoff instructions for Claude Code Desktop:**
+1. Set up `.env` with real Azure OpenAI or Anthropic credentials and a
+   real `EDGAR_IDENTITY`
+2. Run `streamlit run app/streamlit_app.py` and screen MSFT first (same
+   known-good test company used throughout Prototype 1)
+3. Hand-verify every flagged topic against the actual MSFT 10-K Risk
+   Factors text before trusting the output — same spot-check discipline
+   used for Prototype 1's risk summary review, where a real units bug was
+   caught this way
+4. Treat section 10's open questions as things to surface back to the
+   user, not silently pick reasonable-looking defaults for — that is
+   exactly the kind of unstated assumption that caused the units mismatch
+   bug in Prototype 1's segment extractor
+5. Only after MSFT is verified, try a second company to sanity-check the
+   `filing_sections.py` "prior year" assumption holds beyond one filer
 
 ---
 
@@ -289,6 +341,12 @@ Prototype 1's validation badge.
 
 ## 10. Open design questions (not yet decided — flag to the user during build)
 
+**Resolved:** whether Milestone 1 includes a Streamlit UI — yes, confirmed
+explicitly, it is not a later addition. The UI is both the deliverable and
+the tool used to hand-verify flagged output against real filings.
+
+**Still open, listed below:**
+
 - **KPI threshold rule:** fixed percentage (e.g. ±20%) vs relative to the
   company's own historical volatility. Fixed is simpler and more auditable
   (matches Prototype 1's validator style); relative is more accurate but
@@ -303,16 +361,49 @@ Prototype 1's validation badge.
 
 ---
 
-## 11. Suggested repo structure
+## 11. Repo structure (as built)
 
-Follow the same disciplined structure as `edgar_10k_research_agent`:
-one component per file, lazy imports for EDGAR/LLM dependencies so pure
-logic stays unit-testable offline, a `docs/architecture.md` documenting
-the design decisions and known limitations above, and a `tests/` suite
-that includes at least:
-- Offline tests for `find_new_or_expanded_topics()` using hand-built
-  `RiskTopic` fixtures (no LLM or EDGAR dependency)
-- Offline tests for `verify_quote()`
-- A regression/golden test once Milestone 1 has been hand-verified against
-  a real company's two filings (same pattern as Prototype 1's
-  `tests/golden_set/`)
+```
+edgar_risk_screener/
+├── README.md
+├── LICENSE
+├── .gitignore
+├── .env.example
+├── requirements.txt
+├── docs/
+│   ├── architecture.md      # known limitations, written up explicitly
+│   └── design_brief.md      # this document
+├── src/edgar_risk_screener/
+│   ├── __init__.py
+│   ├── schemas.py           # RiskTopic, RiskTopicExtraction, FlaggedTopic, KPIChange
+│   ├── llm_provider.py      # Azure OpenAI / Anthropic factory
+│   ├── kpi_change.py        # Track 1 — deterministic, no LLM
+│   ├── topic_extraction.py  # Track 2 Step 1 — LLM, lazy-imported
+│   ├── topic_diff.py        # Track 2 Step 2 — deterministic
+│   ├── quote_verification.py
+│   ├── screener.py          # orchestration, plain sequential calls
+│   └── edgar_client/
+│       ├── xbrl_facts.py         # reused pattern from Prototype 1
+│       └── filing_sections.py    # NEW: fetches latest + prior-year filing
+├── app/
+│   └── streamlit_app.py     # Milestone 1 UI
+├── tests/
+│   ├── test_kpi_change.py
+│   ├── test_topic_diff.py
+│   └── test_quote_verification.py
+└── notebooks/
+```
+
+**Follows the same discipline as `edgar_10k_research_agent`:** one
+component per file, lazy imports for EDGAR/LLM dependencies so pure logic
+stays unit-testable offline (confirmed working here, same as the fix
+needed twice in Prototype 1), `docs/architecture.md` documenting design
+decisions and known limitations rather than leaving them implicit.
+
+**Still needed, per the handoff instructions above:**
+- A `tests/golden_set/` (or similar) once Milestone 1 has been
+  hand-verified against a real company's two filings, same pattern as
+  Prototype 1's golden set
+- Threshold calibration based on real MSFT output
+- A second company tested, to sanity-check the "prior year = filings[1]"
+  assumption in `filing_sections.py`

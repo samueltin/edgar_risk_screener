@@ -14,7 +14,6 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import streamlit as st
-from edgar_risk_screener.schemas import EMERGING_CATEGORY
 from edgar_risk_screener.screener import screen_company
 
 st.set_page_config(page_title="EDGAR Risk Screener", layout="wide")
@@ -51,44 +50,19 @@ if result:
                 f"(prior {change.prior_value:,.0f}, {change.pct_change:+.1f}%) — {label}"
             )
 
-    st.subheader("Risk factor changes (LLM-assisted, quote-verified)")
+    st.subheader("Risk factor changes (LLM-assisted, category-based)")
     if not result["flagged_topics"]:
-        st.write("No new or significantly expanded risk topics detected.")
-    for topic in sorted(result["flagged_topics"], key=lambda t: t.topic_name.lower()):
+        st.write("No new or significantly expanded risk categories detected.")
+    for topic in result["flagged_topics"]:
         icon = "🆕" if topic.status == "NEW" else "📈"
-        verified_badge = "✓ quote verified" if topic.quote_verified else "⚠ quote NOT verified in source text"
 
         with st.container(border=True):
             st.write(f"{icon} **{topic.status}** — {topic.topic_name}")
-            if topic.category == EMERGING_CATEGORY:
-                st.caption("🧭 Emerging category — not part of the fixed taxonomy, extra scrutiny recommended")
-            else:
-                st.caption(topic.category)
-            st.write(f"{topic.current_mentions} mentions this year, {topic.prior_mentions} last year")
-            if topic.low_confidence:
-                st.caption("🔍 Low confidence — based on a single mention, verify carefully before trusting")
-
-            with st.expander("Show source text (for hand verification)"):
-                st.markdown("**This year:**")
-                st.caption(f"\"{topic.source_quote}\"")
-                if topic.quote_verified:
-                    st.success(verified_badge)
-                else:
-                    st.warning(verified_badge)
-
-                st.markdown("**Last year:**")
-                if topic.prior_source_quote:
-                    prior_verified_badge = (
-                        "✓ quote verified" if topic.prior_quote_verified
-                        else "⚠ quote NOT verified in source text"
-                    )
-                    st.caption(f"\"{topic.prior_source_quote}\"")
-                    if topic.prior_quote_verified:
-                        st.success(prior_verified_badge)
-                    else:
-                        st.warning(prior_verified_badge)
-                else:
-                    st.caption("No matching topic found in the prior-year filing.")
+            st.write(f"{topic.current_mentions} paragraphs this year, {topic.prior_mentions} last year")
+            if topic.example_paragraphs:
+                st.caption("Example paragraphs classified under this category:")
+                for para in topic.example_paragraphs:
+                    st.caption(f"\"{para[:300]}{'...' if len(para) > 300 else ''}\"")
 
     st.info(
         "A flag means an unusual change worth a closer look, not a confirmed problem. "
