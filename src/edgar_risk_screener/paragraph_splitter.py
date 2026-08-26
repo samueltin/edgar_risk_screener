@@ -1,42 +1,82 @@
-"""Deterministic, structural splitting of Risk Factors text into
-paragraphs. No LLM -- same output every time, by design.
+"""Deterministic text-repair helpers, shared infrastructure used by
+Track 3's native sub-topic extraction (subtopic_extraction.py).
 
-This is Option A's foundation: since the LLM will classify one paragraph
-at a time (not synthesize a topic list from the whole document), the
-paragraph boundaries must be stable and reproducible, or the whole
-redesign's stability guarantee falls apart at the first step.
+Originally built for Track 2 (paragraph-level classification into a
+fixed taxonomy, since removed) alongside a MIN_PARAGRAPH_CHARS-based
+split_into_paragraphs() wrapper. That wrapper is gone -- its 40-char
+minimum length filter was specifically wrong for Track 3's use case
+(discards genuine short headings like "Operating Risks", 15 chars). The
+two structural-repair functions below have no such conflict and remain
+in active use.
 
-KNOWN UNVERIFIED ASSUMPTION: this assumes edgartools' HTML-to-text
-conversion produces blank-line-separated paragraphs. That has NOT been
-confirmed against real filing output (the environment that built this
-has no live EDGAR access). If splitting on "\n\n" yields too few
-paragraphs from a real filing, the single-newline fallback below
-activates -- but its output should be spot-checked against the actual
-MSFT text before trusting it, same discipline as every other unverified
-assumption in this project.
+BULLET-LIST FRAGMENTATION (real bug found in GOOG text): 10-K filings
+often present a list of related risks as a bulleted list, where each
+bullet is on its own blank-line-separated chunk following one intro
+sentence. Naive splitting turns each bullet into its own isolated,
+context-free fragment. _merge_bullet_lists() re-attaches each bullet to
+its preceding paragraph.
+
+MID-SENTENCE PAGE-BREAK SPLITS (real bug found in AMZN text): page
+breaks in the source HTML sometimes fall mid-sentence, and the
+conversion to plain text inserts a blank line at that exact point --
+splitting a single sentence into two "paragraphs". Example from the
+real AMZN filing: "...service disruptions, delays, setbacks, or
+failures or" as one paragraph, "quality issues. In addition,
+profitability..." as the next -- one sentence, artificially cut in
+half. _merge_broken_sentences() detects and repairs this: if a
+paragraph doesn't end in terminal punctuation AND the next paragraph
+starts with a lowercase letter, they're almost certainly one sentence
+that got split, and are merged back together.
 """
 
-MIN_PARAGRAPH_CHARS = 40   # filters out stray headers/whitespace fragments
-FALLBACK_MIN_PARAGRAPHS = 5  # if double-newline split yields fewer than this, try single-newline
+BULLET_PREFIXES = ("•", "◦", "‣", "·")
+TERMINAL_PUNCTUATION = ".!?:;\""
 
 
-def split_into_paragraphs(text: str) -> list[str]:
-    """Split on blank lines, dropping fragments too short to be a real
-    risk-factor paragraph (e.g. bare sub-headings, page artifacts).
+def _merge_bullet_lists(paragraphs: list[str]) -> list[str]:
+    """Re-attach any paragraph that starts with a bullet marker to the
+    immediately preceding paragraph, so a bulleted list of related risks
+    is read together with its introductory sentence, not as isolated,
+    context-free fragments.
 
-    Falls back to single-newline splitting if double-newline splitting
-    produces suspiciously few paragraphs for a document this size --
-    protects against silently treating a whole 10A section as "one
-    paragraph" if the source text doesn't use blank-line breaks.
+    A paragraph that IS the very first one and happens to start with a
+    bullet (no preceding paragraph to attach to) is kept as-is -- rare
+    edge case, not expected in practice since Risk Factors sections open
+    with prose, not a bullet.
     """
-    paragraphs = _split_on(text, "\n\n")
+    merged: list[str] = []
+    for paragraph in paragraphs:
+        if paragraph.startswith(BULLET_PREFIXES) and merged:
+            merged[-1] = f"{merged[-1]} {paragraph}"
+        else:
+            merged.append(paragraph)
+    return merged
 
-    if len(paragraphs) < FALLBACK_MIN_PARAGRAPHS and len(text) > 2000:
-        paragraphs = _split_on(text, "\n")
 
-    return paragraphs
+def _merge_broken_sentences(paragraphs: list[str]) -> list[str]:
+    """Re-attach a paragraph to the previous one if the previous one
+    doesn't end in terminal punctuation and this one starts with a
+    lowercase letter -- a strong signal they're one sentence that got
+    split by a mid-sentence page break, not two genuinely separate
+    paragraphs (a real new paragraph/topic starts with a capital letter).
+
+    Run AFTER bullet merging: bullet items normally end in ";" or
+    "; and" (terminal punctuation), so a correctly-merged bullet list
+    won't be falsely caught here.
+    """
+    merged: list[str] = []
+    for paragraph in paragraphs:
+        if merged and _is_broken_sentence_continuation(merged[-1], paragraph):
+            merged[-1] = f"{merged[-1]} {paragraph}"
+        else:
+            merged.append(paragraph)
+    return merged
 
 
-def _split_on(text: str, separator: str) -> list[str]:
-    raw_chunks = text.split(separator)
-    return [p.strip() for p in raw_chunks if len(p.strip()) >= MIN_PARAGRAPH_CHARS]
+def _is_broken_sentence_continuation(prev: str, current: str) -> bool:
+    prev, current = prev.rstrip(), current.lstrip()
+    if not prev or not current or current.startswith(BULLET_PREFIXES):
+        return False
+    ends_mid_sentence = prev[-1] not in TERMINAL_PUNCTUATION
+    starts_lowercase = current[0].islower()
+    return ends_mid_sentence and starts_lowercase
