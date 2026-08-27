@@ -9,12 +9,35 @@ removed -- see docs/architecture.md for its history. Track 3 (native
 sub-topic extraction) is the only risk-factor analysis track now.
 """
 import sys
+import html
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 import streamlit as st
 from edgar_risk_screener.screener import screen_company
+from edgar_risk_screener.subtopic_diff import find_new_sentences
+
+
+def _render_highlighted_text(prior_text: str, current_text: str) -> str:
+    """Build an HTML string for the current-year text with sentences that
+    have no good match anywhere in the prior-year text highlighted.
+
+    This is a purely mechanical, deterministic signal (find_new_sentences,
+    SequenceMatcher-based, no LLM) -- an independent cross-check against
+    the LLM's own new_points bullets, not a restatement of them. If the
+    highlighted sentences roughly line up with the bullets, that's
+    corroborating evidence; if they diverge, that's worth investigating.
+    """
+    results = find_new_sentences(prior_text, current_text)
+    parts = []
+    for sentence, is_new in results:
+        escaped = html.escape(sentence)
+        if is_new:
+            parts.append(f'<mark style="background-color:#fff3a3;">{escaped}</mark>')
+        else:
+            parts.append(escaped)
+    return " ".join(parts)
 
 st.set_page_config(page_title="EDGAR Risk Screener", layout="wide")
 st.title("EDGAR Risk Screener")
@@ -73,7 +96,11 @@ if result:
                     with st.expander("🔍 Verify against original text (side by side)"):
                         st.caption(
                             "Check the bullet points above directly against the real filing "
-                            "text for this topic, both years -- don't just trust the summary."
+                            "text for this topic, both years -- don't just trust the summary. "
+                            "Highlighted sentences on the right have no close match anywhere in "
+                            "last year's text -- a separate, mechanical check (no LLM), not a "
+                            "restatement of the bullets above. If the highlights line up with "
+                            "the bullets, that's reassuring; if they don't, look closer."
                         )
                         col1, col2 = st.columns(2)
                         with col1:
@@ -81,7 +108,10 @@ if result:
                             st.write(change.prior_full_text)
                         with col2:
                             st.markdown("**This year**")
-                            st.write(change.current_full_text)
+                            highlighted_html = _render_highlighted_text(
+                                change.prior_full_text, change.current_full_text
+                            )
+                            st.markdown(highlighted_html, unsafe_allow_html=True)
             elif change.body_preview:
                 st.caption(change.body_preview)
 

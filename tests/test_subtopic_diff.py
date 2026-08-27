@@ -194,3 +194,48 @@ def test_content_diff_called_with_correct_arguments(monkeypatch):
     assert captured["heading"] == "Tax Risks"
     assert captured["prior_text"] == "PRIOR YEAR TEXT"
     assert captured["current_text"] == "CURRENT YEAR TEXT"
+
+
+# --- Sentence-level highlighting: deterministic, independent of the LLM ---
+
+def test_split_into_sentences_basic():
+    from edgar_risk_screener.subtopic_diff import split_into_sentences
+    text = "First sentence here. Second sentence follows. Third one too!"
+    sentences = split_into_sentences(text)
+    assert sentences == [
+        "First sentence here.",
+        "Second sentence follows.",
+        "Third one too!",
+    ]
+
+
+def test_find_new_sentences_flags_genuinely_new_sentence():
+    from edgar_risk_screener.subtopic_diff import find_new_sentences
+
+    prior_text = "We face competition in our core markets. Our margins may decline."
+    current_text = "We face competition in our core markets. Our margins may decline. We are also investing heavily in a completely new AI compute strategy this year."
+
+    results = find_new_sentences(prior_text, current_text)
+
+    flagged_new = [s for s, is_new in results if is_new]
+    assert len(flagged_new) == 1
+    assert "AI compute strategy" in flagged_new[0]
+
+
+def test_find_new_sentences_does_not_flag_reworded_but_similar_sentence():
+    from edgar_risk_screener.subtopic_diff import find_new_sentences
+
+    prior_text = "We face intense competition in our core markets."
+    current_text = "We face significant competition in our core markets."
+
+    results = find_new_sentences(prior_text, current_text)
+
+    assert all(not is_new for _, is_new in results)
+
+
+def test_find_new_sentences_flags_everything_when_prior_is_empty():
+    from edgar_risk_screener.subtopic_diff import find_new_sentences
+
+    results = find_new_sentences("", "This is a totally new topic with no prior text at all.")
+
+    assert all(is_new for _, is_new in results)

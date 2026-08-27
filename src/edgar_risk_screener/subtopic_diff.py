@@ -32,6 +32,7 @@ subtopic_extraction.py), with two layers:
    reliable until empirically checked the same way everything else in
    this project has been.
 """
+import re
 from difflib import SequenceMatcher
 from typing import List
 from pydantic import BaseModel, Field
@@ -160,3 +161,44 @@ def _find_best_match(heading: str, candidates: list[str]) -> str | None:
         if score > best_score:
             best, best_score = candidate, score
     return best if best_score >= SIMILARITY_THRESHOLD else None
+
+
+# --- Sentence-level highlighting: deterministic, independent of the LLM ---
+#
+# This is NOT the same signal as diff_subtopic_content()'s new_points --
+# it's a separate, purely mechanical check (SequenceMatcher on sentence
+# pairs, no LLM at all) that flags which CURRENT-YEAR sentences have no
+# close match anywhere in last year's text for the same topic. Useful as
+# an independent cross-check: if the highlighted sentences roughly line
+# up with what the LLM's new_points describe, that's corroborating
+# evidence the content diff did a good job. If they diverge a lot (e.g.
+# many highlighted sentences the LLM never mentioned, or vice versa),
+# that's a real signal the LLM step needs scrutiny -- exactly the kind
+# of independent verification this project has relied on throughout.
+
+SENTENCE_SPLIT_PATTERN = re.compile(r"(?<=[.!?])\s+")
+NEW_SENTENCE_SIMILARITY_THRESHOLD = 0.5  # below this, no good match in prior text
+
+
+def split_into_sentences(text: str) -> list[str]:
+    return [s.strip() for s in SENTENCE_SPLIT_PATTERN.split(text) if s.strip()]
+
+
+def find_new_sentences(prior_text: str, current_text: str) -> list[tuple[str, bool]]:
+    """For every sentence in current_text, return (sentence, is_new),
+    where is_new is True if no sufficiently similar sentence exists
+    anywhere in prior_text. Purely mechanical -- SequenceMatcher pairwise
+    comparison, no LLM involved.
+    """
+    prior_sentences = split_into_sentences(prior_text)
+    current_sentences = split_into_sentences(current_text)
+
+    results = []
+    for sentence in current_sentences:
+        best_score = 0.0
+        for prior_sentence in prior_sentences:
+            score = SequenceMatcher(None, sentence.lower(), prior_sentence.lower()).ratio()
+            best_score = max(best_score, score)
+        results.append((sentence, best_score < NEW_SENTENCE_SIMILARITY_THRESHOLD))
+
+    return results

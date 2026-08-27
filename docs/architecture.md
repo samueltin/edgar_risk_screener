@@ -1,5 +1,39 @@
 # Architecture
 
+## Sentence-level highlighting added to the side-by-side view
+
+**What:** `subtopic_diff.py`'s `find_new_sentences()` splits both years'
+body text into sentences and flags, for each CURRENT-year sentence,
+whether any sufficiently similar sentence (SequenceMatcher ratio >= 0.5)
+exists anywhere in the PRIOR year's text. The Streamlit side-by-side
+view now highlights those sentences in the "This year" column.
+
+**Why this is a separate, valuable signal, not just cosmetics:** this
+check is entirely independent of `diff_subtopic_content()`'s LLM-
+generated bullet points -- pure mechanical string comparison, no LLM
+involved at all. That makes it a genuine cross-check: if the highlighted
+sentences roughly correspond to what the bullets describe, that's
+corroborating evidence the LLM did a reasonable job. If many highlighted
+sentences aren't reflected in any bullet, or vice versa, that's a
+concrete signal the content-diff step needs scrutiny -- exactly the kind
+of independent verification this project has relied on throughout,
+rather than trusting one LLM output to grade itself.
+
+**Correctness note:** rendered via `unsafe_allow_html=True` in Streamlit
+(needed for the `<mark>` highlight styling), so every sentence is passed
+through `html.escape()` before being wrapped -- verified against a real
+test case containing literal `<script>` and `&` characters (the kind of
+stray formatting artifact that does occasionally appear in real filing
+text) to confirm nothing except the app's own `<mark>` tags ever
+renders as live HTML.
+
+**Threshold note:** `NEW_SENTENCE_SIMILARITY_THRESHOLD = 0.5` is a
+starting point, not empirically tuned against real filing text yet --
+worth checking whether it over- or under-highlights once used on a real
+UPDATED result.
+
+---
+
 ## Track 2 fully removed (was: temporarily disabled)
 
 **Decision:** after validating Track 3 (native sub-topic extraction)
