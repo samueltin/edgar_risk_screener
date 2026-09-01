@@ -54,6 +54,9 @@ def get_risk_factors_two_periods(ticker: str) -> dict:
 
 
 if __name__ == "__main__":
-    result = get_risk_factors_two_periods("MSFT")
+    ticker = input("Enter ticker [MSFT]: ").strip().upper() or "MSFT"
+    result = get_risk_factors_two_periods(ticker)
     print(f"Current filing ({result['current']['filing_date']}): {len(result['current']['text'].split()):,} words")
+    print (f"Current filing text: {result['current']['text']}")
     print(f"Prior filing ({result['prior']['filing_date']}): {len(result['prior']['text'].split()):,} words")
+    print (f"Prior filing text: {result['prior']['text']}")
