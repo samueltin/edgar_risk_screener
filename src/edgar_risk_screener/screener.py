@@ -21,8 +21,16 @@ edgartools/langchain installed.
 """
 
 
-def screen_company(ticker: str) -> dict:
+def screen_company(ticker: str, max_topics_to_process: int | None = None) -> dict:
     """Run the full screener for one ticker.
+
+    max_topics_to_process is a cost control: only the first N MATCHED
+    sub-topics (in current-year heading order) get the LLM content-diff
+    call; the rest are marked SKIPPED, with a placeholder message but
+    their real prior/current body text still included. NEW/REMOVED
+    topics are never limited -- they're free, no LLM call involved. None
+    (default) means no limit. See subtopic_diff.py's compare_subtopics()
+    for the full reasoning.
 
     Returns:
         {
@@ -50,7 +58,7 @@ def screen_company(ticker: str) -> dict:
     # within-topic content diff
     current_subtopics = extract_subtopics(periods["current"]["text"])
     prior_subtopics = extract_subtopics(periods["prior"]["text"])
-    subtopic_changes = compare_subtopics(prior_subtopics, current_subtopics)
+    subtopic_changes = compare_subtopics(prior_subtopics, current_subtopics, max_topics_to_process=max_topics_to_process)
 
     return {
         "ticker": ticker,

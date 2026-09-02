@@ -98,25 +98,49 @@ def diff_subtopic_content(heading: str, prior_text: str, current_text: str) -> S
     return structured_llm.invoke(prompt)
 
 
+SKIPPED_SUMMARY_MESSAGE = "Summary skipped due to token usage management."
+
+
 def compare_subtopics(
     prior_subtopics: "dict[str, str]",
     current_subtopics: "dict[str, str]",
+    max_topics_to_process: int | None = None,
 ) -> list[SubTopicChange]:
     """Compare two years' {heading: body_text} mappings.
 
     Returns:
-    - NEW headings (no good match in prior year) -- deterministic
-    - REMOVED headings (no good match in current year) -- deterministic
-    - UPDATED headings (matched a prior-year topic, but LLM comparison
-      of the two years' body text found genuinely new content) -- for
-      matched topics only, and only when diff_subtopic_content() finds
-      something; a matched topic with nothing new is not reported.
+    - NEW headings (no good match in prior year) -- deterministic, no LLM,
+      never limited by max_topics_to_process (there is no cost to ration)
+    - REMOVED headings (no good match in current year) -- deterministic,
+      same as above, never limited
+    - UPDATED headings (matched a prior-year topic, and diff_subtopic_
+      content() found genuinely new content) -- the ONLY step that costs
+      an LLM call, and the only one max_topics_to_process governs
+    - SKIPPED headings (matched a prior-year topic, but the LLM diff was
+      not run because max_topics_to_process was reached) -- a placeholder
+      message instead of real findings, with the real prior/current body
+      text still attached so the analyst can read the original content
+      themselves even without an LLM comparison of it
+
+    max_topics_to_process counts MATCHED topics only, in current-year
+    heading order (the order they're already iterated in below) -- the
+    first N matched topics get a real diff_subtopic_content() call; any
+    matched topics beyond that get SKIPPED instead. None (default) means
+    no limit. 0 means process none (every matched topic is skipped). A
+    large sentinel (e.g. 999, used by the UI) behaves as "no limit" without
+    special-casing, since real filings have far fewer matched topics than
+    that -- same convention as edgar_10k_research_agent's
+    max_categories_to_summarize, after that project's initial version used
+    a truthy check (`if max_topics_to_process:`) that silently treated 0
+    as "no limit" instead of "process none", since 0 is falsy in Python.
+    This uses `is not None` from the start to avoid repeating that bug.
     """
     prior_headings = [h for h in prior_subtopics if not _is_boilerplate(h)]
     current_headings = [h for h in current_subtopics if not _is_boilerplate(h)]
 
     matched_prior_headings: set[str] = set()
     changes: list[SubTopicChange] = []
+    matched_topics_processed = 0
 
     for current_heading in current_headings:
         match = _find_best_match(current_heading, prior_headings)
@@ -128,6 +152,19 @@ def compare_subtopics(
             ))
         else:
             matched_prior_headings.add(match)
+
+            if max_topics_to_process is not None and matched_topics_processed >= max_topics_to_process:
+                changes.append(SubTopicChange(
+                    heading=current_heading,
+                    status="SKIPPED",
+                    body_preview=current_subtopics[current_heading][:BODY_PREVIEW_CHARS],
+                    new_points=[SKIPPED_SUMMARY_MESSAGE],
+                    prior_full_text=prior_subtopics[match],
+                    current_full_text=current_subtopics[current_heading],
+                ))
+                continue
+
+            matched_topics_processed += 1
             content_diff = diff_subtopic_content(
                 heading=current_heading,
                 prior_text=prior_subtopics[match],

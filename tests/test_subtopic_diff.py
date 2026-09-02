@@ -239,3 +239,142 @@ def test_find_new_sentences_flags_everything_when_prior_is_empty():
     results = find_new_sentences("", "This is a totally new topic with no prior text at all.")
 
     assert all(is_new for _, is_new in results)
+
+
+# --- max_topics_to_process: cost control for matched-topic LLM calls ---
+
+def test_no_limit_processes_every_matched_topic(monkeypatch):
+    call_count = {"n": 0}
+
+    def counting_diff(heading, prior_text, current_text):
+        call_count["n"] += 1
+        return SubTopicContentDiffResult(new_points=[f"new point for {heading}"])
+
+    monkeypatch.setattr("edgar_risk_screener.subtopic_diff.diff_subtopic_content", counting_diff)
+
+    prior = {"Topic A": "a", "Topic B": "b", "Topic C": "c"}
+    current = {"Topic A": "a2", "Topic B": "b2", "Topic C": "c2"}
+
+    changes = compare_subtopics(prior, current)
+
+    assert call_count["n"] == 3
+    assert all(c.status == "UPDATED" for c in changes)
+
+
+def test_limit_of_2_processes_first_2_matched_topics_and_skips_the_rest(monkeypatch):
+    """'Top N' means the first N MATCHED topics in current-year heading
+    order -- there's no other ranking signal available."""
+    call_count = {"n": 0}
+
+    def counting_diff(heading, prior_text, current_text):
+        call_count["n"] += 1
+        return SubTopicContentDiffResult(new_points=[f"new point for {heading}"])
+
+    monkeypatch.setattr("edgar_risk_screener.subtopic_diff.diff_subtopic_content", counting_diff)
+
+    prior = {"Topic A": "a", "Topic B": "b", "Topic C": "c"}
+    current = {"Topic A": "a2", "Topic B": "b2", "Topic C": "c2"}
+
+    changes = compare_subtopics(prior, current, max_topics_to_process=2)
+
+    assert call_count["n"] == 2  # only 2 real LLM calls made
+    statuses = {c.heading: c.status for c in changes}
+    assert statuses["Topic A"] == "UPDATED"
+    assert statuses["Topic B"] == "UPDATED"
+    assert statuses["Topic C"] == "SKIPPED"
+
+
+def test_skipped_topic_gets_placeholder_message_and_keeps_real_source_text(monkeypatch):
+    monkeypatch.setattr(
+        "edgar_risk_screener.subtopic_diff.diff_subtopic_content",
+        lambda heading, prior_text, current_text: SubTopicContentDiffResult(new_points=["should not be used"]),
+    )
+
+    prior = {"Topic A": "PRIOR TEXT FOR A"}
+    current = {"Topic A": "CURRENT TEXT FOR A"}
+
+    changes = compare_subtopics(prior, current, max_topics_to_process=0)
+
+    assert len(changes) == 1
+    change = changes[0]
+    assert change.status == "SKIPPED"
+    assert change.new_points == ["Summary skipped due to token usage management."]
+    assert change.prior_full_text == "PRIOR TEXT FOR A"
+    assert change.current_full_text == "CURRENT TEXT FOR A"
+
+
+def test_limit_of_zero_means_process_none(monkeypatch):
+    """0 must mean 'process none' -- not 'no limit'. edgar_10k_
+    research_agent's first version used a truthy check
+    (`if max_categories_to_summarize:`) that silently treated 0 as
+    falsy, meaning 'no limit' instead of 'process none' -- this uses
+    `is not None` from the start specifically to avoid repeating that."""
+    call_count = {"n": 0}
+
+    def counting_diff(heading, prior_text, current_text):
+        call_count["n"] += 1
+        return SubTopicContentDiffResult(new_points=["x"])
+
+    monkeypatch.setattr("edgar_risk_screener.subtopic_diff.diff_subtopic_content", counting_diff)
+
+    prior = {"Topic A": "a", "Topic B": "b"}
+    current = {"Topic A": "a2", "Topic B": "b2"}
+
+    changes = compare_subtopics(prior, current, max_topics_to_process=0)
+
+    assert call_count["n"] == 0
+    assert all(c.status == "SKIPPED" for c in changes)
+
+
+def test_limit_covering_all_matched_topics_produces_no_skipped_entries(monkeypatch):
+    monkeypatch.setattr(
+        "edgar_risk_screener.subtopic_diff.diff_subtopic_content",
+        lambda heading, prior_text, current_text: SubTopicContentDiffResult(new_points=["x"]),
+    )
+
+    prior = {"Topic A": "a", "Topic B": "b"}
+    current = {"Topic A": "a2", "Topic B": "b2"}
+
+    changes = compare_subtopics(prior, current, max_topics_to_process=999)
+
+    assert all(c.status == "UPDATED" for c in changes)
+
+
+def test_new_and_removed_topics_are_never_limited(monkeypatch):
+    """NEW/REMOVED involve no LLM call at all -- there's nothing to
+    ration, so max_topics_to_process must not affect them, even at 0."""
+    monkeypatch.setattr(
+        "edgar_risk_screener.subtopic_diff.diff_subtopic_content",
+        lambda heading, prior_text, current_text: SubTopicContentDiffResult(new_points=["x"]),
+    )
+
+    prior = {"Legal and Regulatory Risks": "p"}
+    current = {"Artificial Intelligence Governance Risks": "c"}
+
+    changes = compare_subtopics(prior, current, max_topics_to_process=0)
+
+    statuses = {c.heading: c.status for c in changes}
+    assert statuses["Artificial Intelligence Governance Risks"] == "NEW"
+    assert statuses["Legal and Regulatory Risks"] == "REMOVED"
+
+
+def test_limit_counts_only_matched_topics_not_new_ones(monkeypatch):
+    """A NEW topic (no LLM call) must not consume any of the
+    max_topics_to_process budget -- only genuinely matched topics do."""
+    call_count = {"n": 0}
+
+    def counting_diff(heading, prior_text, current_text):
+        call_count["n"] += 1
+        return SubTopicContentDiffResult(new_points=["x"])
+
+    monkeypatch.setattr("edgar_risk_screener.subtopic_diff.diff_subtopic_content", counting_diff)
+
+    prior = {"Matched Topic": "a"}
+    current = {"Brand New Topic": "z", "Matched Topic": "a2"}
+
+    changes = compare_subtopics(prior, current, max_topics_to_process=1)
+
+    assert call_count["n"] == 1  # the one matched topic got its real call
+    statuses = {c.heading: c.status for c in changes}
+    assert statuses["Brand New Topic"] == "NEW"
+    assert statuses["Matched Topic"] == "UPDATED"

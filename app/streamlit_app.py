@@ -44,10 +44,20 @@ st.title("EDGAR Risk Screener")
 st.caption("Compares a company's latest 10-K against its prior-year 10-K and flags unusual changes.")
 
 ticker = st.text_input("Ticker", value="MSFT").upper().strip()
+max_topics_to_process = st.number_input(
+    "Max matched risk topics to process (0 = process none, 999 = process all)",
+    min_value=0, max_value=999, value=1, step=1,
+    help="Limits how many matched sub-topics get the LLM content-diff call, in the "
+         "current filing's own heading order. NEW and REMOVED topics are never limited "
+         "-- they're free, no LLM call involved. Topics beyond this limit are marked "
+         "skipped (no LLM call for them), but you can still read their original text "
+         "side by side -- useful for controlling token cost on filings with many "
+         "matched topics.",
+)
 
 if st.button("Screen company") and ticker:
     with st.spinner(f"Fetching two filing periods and analyzing {ticker}..."):
-        st.session_state["result"] = screen_company(ticker)
+        st.session_state["result"] = screen_company(ticker, max_topics_to_process=max_topics_to_process)
 
 result = st.session_state.get("result")
 
@@ -84,35 +94,38 @@ if result:
     if not result["subtopic_changes"]:
         st.write("No sub-topic changes detected compared to the prior filing.")
     for change in result["subtopic_changes"]:
-        icon = {"NEW": "🆕", "REMOVED": "🗑️", "UPDATED": "🔄"}.get(change.status, "•")
+        icon = {"NEW": "🆕", "REMOVED": "🗑️", "UPDATED": "🔄", "SKIPPED": "⏭️"}.get(change.status, "•")
         with st.container(border=True):
             st.write(f"{icon} **{change.status}** — {change.heading}")
             if change.status == "UPDATED" and change.new_points:
                 st.caption("Newly mentioned this year (not present last year):")
                 for point in change.new_points:
                     st.write(f"- {point}")
+            elif change.status == "SKIPPED":
+                st.info(change.new_points[0] if change.new_points else "Summary skipped due to token usage management.")
 
-                if change.prior_full_text and change.current_full_text:
-                    with st.expander("🔍 Verify against original text (side by side)"):
-                        st.caption(
-                            "Check the bullet points above directly against the real filing "
-                            "text for this topic, both years -- don't just trust the summary. "
-                            "Highlighted sentences on the right have no close match anywhere in "
-                            "last year's text -- a separate, mechanical check (no LLM), not a "
-                            "restatement of the bullets above. If the highlights line up with "
-                            "the bullets, that's reassuring; if they don't, look closer."
+            if change.status in ("UPDATED", "SKIPPED") and change.prior_full_text and change.current_full_text:
+                with st.expander("🔍 Verify against original text (side by side)"):
+                    st.caption(
+                        "Check the bullet points above directly against the real filing "
+                        "text for this topic, both years -- don't just trust the summary. "
+                        "Highlighted sentences on the right have no close match anywhere in "
+                        "last year's text -- a separate, mechanical check (no LLM), not a "
+                        "restatement of the bullets above. If the highlights line up with "
+                        "the bullets, that's reassuring; if they don't, look closer."
+                    )
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.markdown("**Last year**")
+                        st.write(change.prior_full_text)
+                    with col2:
+                        st.markdown("**This year**")
+                        highlighted_html = _render_highlighted_text(
+                            change.prior_full_text, change.current_full_text
                         )
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.markdown("**Last year**")
-                            st.write(change.prior_full_text)
-                        with col2:
-                            st.markdown("**This year**")
-                            highlighted_html = _render_highlighted_text(
-                                change.prior_full_text, change.current_full_text
-                            )
-                            st.markdown(highlighted_html, unsafe_allow_html=True)
-            elif change.body_preview:
+                        st.markdown(highlighted_html, unsafe_allow_html=True)
+
+            if change.status not in ("UPDATED", "SKIPPED") and change.body_preview:
                 st.caption(change.body_preview)
 
     st.info(

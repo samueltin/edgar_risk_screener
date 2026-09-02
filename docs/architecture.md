@@ -1,5 +1,67 @@
 # Architecture
 
+## Cost control: limit how many matched sub-topics get the LLM diff
+
+**Why:** another cost lever, alongside Ollama -- a filing with many
+matched sub-topics means one LLM call per matched topic
+(diff_subtopic_content). `max_topics_to_process` caps how many of those
+calls actually happen, in current-year heading order. NEW and REMOVED
+topics are never limited -- they involve no LLM call at all, so there's
+nothing to ration.
+
+**Built the `is not None` check in from the start**, not a truthy check --
+edgar_10k_research_agent's first version of the equivalent feature
+(`max_categories_to_summarize`) used `if max_categories_to_summarize:`,
+which silently treated `0` as falsy and therefore "no limit" instead of
+the intended "process none" (found and fixed after the fact there). Same
+`0` = process none / large sentinel (999, used by the UI) = process all
+convention here, applied correctly the first time.
+
+**A matched topic beyond the limit gets `status="SKIPPED"`**, with a
+placeholder message (`new_points = ["Summary skipped due to token usage
+management."]`) but its real `prior_full_text`/`current_full_text` still
+populated -- the point is saving LLM cost, not hiding the analyst's
+ability to read the original filing content. The Streamlit UI still
+offers the side-by-side original-text view for a SKIPPED topic, since
+that costs nothing extra (no LLM involved), including the deterministic
+sentence-highlighting cross-check, which also runs for free.
+
+---
+
+## Ollama support added (cutting Azure OpenAI cost during development)
+
+**Why:** same reason as edgar_10k_research_agent -- Azure OpenAI API cost
+during active development. `llm_provider.get_llm()` gained an `"ollama"`
+branch, identical pattern to the one already proven there: `langchain_
+ollama.ChatOllama`, with `base_url`, `model`, and `num_ctx` confirmed as
+real fields on that class (checked directly via `ChatOllama.model_fields`,
+not assumed).
+
+**`OLLAMA_NUM_CTX` defaults to 4096**, matching the one real, confirmed
+data point from edgar_10k_research_agent's testing: an 8GB GPU running
+`llama3.1:8b` reported exactly that context window, with 100% GPU
+utilization and no demonstrated headroom to push it higher safely.
+
+**What's different here, and genuinely lower-risk than edgar_10k_
+research_agent's experience:** `diff_subtopic_content()` (subtopic_diff.py)
+is the only caller of `get_llm()` in this project, and it's scoped to one
+risk sub-topic's body text per call, not a whole MD&A document. edgar_10k_
+research_agent's local-model problems (context truncation, fabricated
+numbers) came specifically from sending large, whole-document text in one
+call -- a fundamentally different, larger-scale problem than comparing
+two years of one topic's text.
+
+**Honest status: no context-overflow problem has been confirmed here.**
+Some real sub-topics can still run long (e.g. Oracle's "Business and
+Operational Risks" topic, which produced 30+ bullet points earlier in
+this project's testing), so it's plausible a similar issue could surface
+on a long enough topic -- but nothing has actually been built to guard
+against it, since there's no real evidence yet that it's needed. If a real
+Ollama run against a long topic shows truncated or degraded output, that
+would be the point to add a provider-aware limit here too, not before.
+
+---
+
 ## Sentence-level highlighting added to the side-by-side view
 
 **What:** `subtopic_diff.py`'s `find_new_sentences()` splits both years'
